@@ -1,0 +1,572 @@
+---
+title: "Rascunho - Trabalho Prático Modelos Lineares Generalizados"
+format: html
+editor: visual
+---
+
+# 0 - Setup
+
+## Importação de Pacotes
+
+```{r}
+#| label: setup-pacotes
+#| message: false
+#| warning: false
+
+library(tidyverse)
+library(tidymodels) 
+library(knitr)      
+library(emmeans)
+```
+
+# 1 - Preparação dos Dados
+
+# Importação da Base
+
+```{r}
+#| label: dados-leitura
+
+titanic_bruto = read_csv("titanic.csv", show_col_types = FALSE)
+glimpse(titanic_bruto)
+
+total_faltantes = sum(is.na(titanic_bruto))
+total_faltantes
+```
+
+A base de dados contém informações de 714 passageiros do navio Titanic e cinco variáveis: `vivo`, que indica se o passageiro sobreviveu ao naufrágio, e as covariáveis `classe`, `idade`, `sexo` e `sozinho`. Não foram encontrados valores faltantes na base. A base também possui linhas repetidas, que correspondem a passageiros diferentes com as mesmas características; conforme orientação do professor, essas linhas foram mantidas e tratadas como observações independentes.
+
+## Fatores e Níveis de Referência
+
+```{r}
+#| label: dados-fatores
+
+titanic = titanic_bruto |>
+  mutate(
+    vivo    = factor(vivo,    levels = c("nao", "sim")),                       # nao = 0, sim = 1
+    classe  = factor(classe,  levels = c("I", "II", "III"), ordered = FALSE),  # referência: I
+    sexo    = factor(sexo,    levels = c("feminino", "masculino")),            # feminino = 0, masculino = 1
+    sozinho = factor(sozinho, levels = c("nao", "sim"))                        # nao = 0, sim = 1
+  )
+
+glimpse(titanic)
+```
+
+As variáveis vivo, classe, sexo e sozinho foram lidas como texto e convertidas em fatores, enquanto idade foi mantida como variável numérica, em anos. Na variável classe, o primeiro nível de cada fator foi definido como o nível de referência. Para a variável resposta, adotou-se "nao" como primeiro nível, de forma que "1" indica que o passageiro sobreviveu. Para as covariáveis, foram adotados como referência a 1ª classe, o sexo feminino e o passageiro acompanhado.
+
+```{r}
+#| label: dados-matriz-modelo
+
+# Conferência das indicadoras geradas
+X <- model.matrix(~ classe + idade + sexo + sozinho, data = titanic)
+colnames(X)
+# esperado: (Intercept) classeII classeIII idade sexomasculino sozinhosim. só aparecem os que não são a referência
+
+
+```
+
+Na matriz do modelo, cada covariável categórica é representada por variáveis indicadoras, uma para cada nível diferente da referência: duas para a classe (2ª e 3ª classe), uma para o sexo masculino e uma para o passageiro que viajava sozinho. O nível de referência não gera coluna própria, pois corresponde ao caso em que todas as suas indicadoras valem zero, e seu efeito fica incorporado ao intercepto.
+
+# 2- Análise Exploratória
+
+A análise exploratória tem como objetivo descrever a relação entre a sobrevivência e cada uma das covariáveis e orientar a escolha dos modelos que serão ajustados. As comparações feitas nesta seção consideram uma covariável de cada vez; os efeitos de cada covariável levando em conta as demais serão avaliados no modelo ajustado.
+
+Dos 714 passageiros da base, 290 sobreviveram e 424 não sobreviveram.
+
+## Categóricas
+
+```{r}
+#| label: tbl-frequencias
+#| tbl-cap: "Percentual de passageiros que sobreviveram (Sim) e que não sobreviveram (Não) dentro de cada nível das covariáveis categóricas."
+#| tbl-subcap:
+#|   - "Classe"
+#|   - "Sexo"
+#|   - "Sozinho"
+#| layout-ncol: 3
+
+freq_classe  = prop.table(table(titanic$classe,  titanic$vivo), margin = 1) * 100
+freq_sexo    = prop.table(table(titanic$sexo,    titanic$vivo), margin = 1) * 100
+freq_sozinho = prop.table(table(titanic$sozinho, titanic$vivo), margin = 1) * 100
+
+kable(freq_classe,  digits = 1, col.names = c("Não (%)", "Sim (%)"))
+kable(freq_sexo,    digits = 1, col.names = c("Não (%)", "Sim (%)"))
+kable(freq_sozinho, digits = 1, col.names = c("Não (%)", "Sim (%)"))
+```
+
+```{r}
+#| label: fig-barras
+#| fig-cap: "Proporção de passageiros que sobreviveram dentro de cada nível das covariáveis categóricas."
+#| fig-subcap:
+#|   - "Classe"
+#|   - "Sexo"
+#|   - "Sozinho"
+#| layout-ncol: 3
+#| fig-width: 3
+#| fig-height: 3
+
+ggplot(titanic, aes(x = classe, fill = vivo)) +
+  geom_bar(position = "fill") +
+  scale_fill_grey(start = 0.75, end = 0.3) +
+  labs(x = "Classe", y = "Proporção", fill = "Sobreviveu") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+ggplot(titanic, aes(x = sexo, fill = vivo)) +
+  geom_bar(position = "fill") +
+  scale_fill_grey(start = 0.75, end = 0.3) +
+  labs(x = "Sexo", y = "Proporção", fill = "Sobreviveu") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+ggplot(titanic, aes(x = sozinho, fill = vivo)) +
+  geom_bar(position = "fill") +
+  scale_fill_grey(start = 0.75, end = 0.3) +
+  labs(x = "Viajava sozinho", y = "Proporção", fill = "Sobreviveu") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+## Idade
+
+```{r}
+#| label: tbl-idade
+#| tbl-cap: "Medidas resumo da idade (em anos) de acordo com a sobrevivência."
+
+titanic |>
+  group_by(vivo) |>
+  summarise(
+    n = n(),
+    media = mean(idade),
+    mediana = median(idade),
+    desvio_padrao = sd(idade),
+    minimo = min(idade),
+    maximo = max(idade)
+  ) |>
+  kable(digits = 1,
+        col.names = c("Sobreviveu", "n", "Média", "Mediana", "Desvio-padrão", "Mínimo", "Máximo"))
+```
+
+```{r}
+#| label: fig-idade
+#| fig-cap: "Densidade estimada da idade de acordo com a sobrevivência."
+#| fig-width: 5.5
+#| fig-height: 3
+
+ggplot(titanic, aes(x = idade, color = vivo, linetype = vivo)) +
+  geom_density(linewidth = 0.8) +
+  scale_color_grey(start = 0.6, end = 0.1) +
+  labs(x = "Idade (anos)", y = "Densidade",
+       color = "Sobreviveu", linetype = "Sobreviveu") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+```
+
+# 3 - Escolha do Modelo
+
+## Escolha da família
+
+Para fabricar um modelo dos MLGs, é preciso escolher uma distribuição da família exponencial de distribuições para a variável resposta. No nosso caso, a variável "vivo", que indica se o passageiro sobreviveu ou não à tragedia do titanic, é uma variável da natureza binária (sim/não, 1/0). Por sua natureza, nossa variável resposta $Y$ segue uma distribuição **Bernoulli**, ou Binomial com 1 ensaio.
+
+Seja $Y_i$ uma variável aleatória com $m_i$ ensaios e probabilidade de sucesso $\pi_i$, sua distribuição de probabilidade é dada por:
+
+$$
+Y_i \sim \text{Bernoulli(}\pi_i)
+$$
+
+$$P(Y_i = y_i) = \pi_i^{y_i} (1 - \pi_i)^{1 - y_i}, \qquad y_i \in \{0, 1\}
+$$
+
+Em que $\pi_i = P(Y_i = 1)$ é a probabilidade de o i-ésimo passageiro sobreviver.
+
+## Preditor Linear
+
+O preditor linear gerado pelo nosso modelo será algo nas linhas seguintes, considerando que não incluíremos nenuhm termo de interação entre covariáveis por enquanto.
+
+$$
+\eta_i = \beta_0 + \beta_1 I_i\{\text{II}\} + \beta_2 I_i\{\text{III}\} + \beta_3\, \text{idade}_i + \beta_4 I_i\{\text{masculino}\} + \beta_5 I_i\{\text{sozinho}\}
+$$
+
+em que $I_i$ vale 1 se o i-ésimo passageiro pertence à categoria indicada e 0 caso contrário.
+
+E os termos de interação serão os seguintes:
+
+$$
+\begin{aligned}
+\text{classe} \times \text{sexo}: &\quad \beta_6\, I_i\{\text{II}\} I_i\{\text{masculino}\} + \beta_7\, I_i\{\text{III}\} I_i\{\text{masculino}\}, \\
+\text{sexo} \times \text{sozinho}: &\quad \beta_8\, I_i\{\text{masculino}\} I_i\{\text{sozinho}\}, \\
+\text{idade} \times \text{sexo}: &\quad \beta_9\, \text{idade}_i\, I_i\{\text{masculino}\}.
+\end{aligned}
+$$
+
+## Função de Ligação
+
+Nos MLGs, a função de ligação será o que faz a ponte entre a variável resposta e o preditor linear.
+
+No caso da distribuição bernoulli, a função de ligação canônica é o **logito**, que permite interpretar os coeficientes do modelo como razões de chances. Porém, também podemos testar outras ligações, como a probito e a complemento log-log.
+
+## Dispersão
+
+Como estaremos na família Bernoulli/Binomial, o parâmetro de dispersão da variável resposta é tido como 1, fixo. Portanto o desvio residual não pode ser usado como teste de ajuste para os modelos.
+
+# 4 - Ajuste do Modelo
+
+## Divisão em Treino/Teste
+
+Para garantia de reprodutibilidade do código, fixaremos uma seed a partir daqui.
+
+Faremos a divisão da base de dados em treino (75%) e teste (25%), para impedir que o modelo tenha problemas com overfitting. Além disso, vamos estratificar os conjuntos de treino e teste, para garantir que o modelo seja treinado com uma quantidade balanceada de vivos/mortos com relação à base de teste.
+
+```{r}
+#| label: divisao-treino-teste
+
+set.seed(1234)
+split = initial_split(titanic, prop = 0.75, strata = vivo)
+
+treino = training(split)
+teste  = testing(split)
+```
+
+## Ajuste Inicial
+
+Faremos o ajuste inicial dos modelos considerando a variável resposta como pertencente à família binomial/bernoulli. Vamos ajustar o modelo com várias funções de ligação além da canônica, para critério de comparação de ajuste posteriormente. Também faremos o ajuste inicial com todas as variáveis e interações entre variáveis, e removeremos sequencialmente aquelas que não forem significativas.
+
+```{r}
+#| label: ajuste-inicial
+
+fit_logito  = glm(vivo ~ (classe + idade + sexo + sozinho)^2,
+                  data = treino, family = binomial(link = "logit"))
+
+fit_probito = glm(vivo ~ (classe + idade + sexo + sozinho)^2,
+                  data = treino, family = binomial(link = "probit"))
+
+fit_cloglog = glm(vivo ~ (classe + idade + sexo + sozinho)^2,
+                  data = treino, family = binomial(link = "cloglog"))
+
+summary(fit_logito)
+```
+
+```{r}
+#| label: tbl-ligacoes-inicial
+#| tbl-cap: "Desvio, graus de liberdade residuais e AIC do modelo inicial para cada função de ligação."
+
+ajustes = list(
+  "Logito" = fit_logito,
+  "Probito" = fit_probito,
+  "Complemento log-log" = fit_cloglog
+)
+
+comparacao_ligacoes = data.frame(
+  Desvio = sapply(ajustes, deviance),
+  gl     = sapply(ajustes, df.residual),
+  AIC    = sapply(ajustes, AIC)
+)
+
+kable(comparacao_ligacoes, digits = 2)
+```
+
+### Remoção de Termos Não-Significativos
+
+Removeremos os termos com os maiores p-values, começando pelas iterações, enquanto os ajustes melhorarem (AICs menores) e/ou algum p-value for maior que 5%.
+
+```{r}
+#| label: anova_1
+car::Anova(fit_logito)
+car::Anova(fit_probito)
+car::Anova(fit_cloglog)
+```
+
+Vamos remover o termo com maior p-valor. Em todos os modelos, é a interação "sexo:sozinho". Vamos reajustar os modelos sem essa interação.
+
+#### Iteração 1
+
+```{r}
+#| label: update_1
+
+# logito
+fit_logito_1 = update(fit_logito, . ~ . - sexo:sozinho)
+anova(fit_logito_1, fit_logito, test = "Chisq")
+AIC(fit_logito, fit_logito_1)
+car::Anova(fit_logito_1)
+
+# probito
+fit_probito_1 = update(fit_probito, . ~ . - sexo:sozinho)
+anova(fit_probito_1, fit_probito, test = "Chisq")
+AIC(fit_probito, fit_probito_1)
+car::Anova(fit_probito_1)
+
+# complemento log-log
+fit_cloglog_1 = update(fit_cloglog, . ~ . - sexo:sozinho)
+anova(fit_cloglog_1, fit_cloglog, test = "Chisq")
+AIC(fit_cloglog, fit_cloglog_1)
+car::Anova(fit_cloglog_1)
+```
+
+O ajuste de nenhum dos modelos piorou. Portanto continuaremos com os novos modelos e removeremos novamente os termos não-significativos de cada, sendo classe:sozinho para o logito e o cloglog, e classe:idade para o probito.
+
+#### Iteração 2
+
+```{r}
+#| label: update_2
+
+# logito
+fit_logito_2 = update(fit_logito_1, . ~ . - classe:sozinho)
+anova(fit_logito_2, fit_logito_1, test = "Chisq")
+AIC(fit_logito_1, fit_logito_2)
+car::Anova(fit_logito_2)
+
+# probito
+fit_probito_2 = update(fit_probito_1, . ~ . - classe:idade)
+anova(fit_probito_2, fit_probito_1, test = "Chisq")
+AIC(fit_probito_1, fit_probito_2)
+car::Anova(fit_probito_2)
+
+# complemento log-log
+fit_cloglog_2 = update(fit_cloglog_1, . ~ . - classe:sozinho)
+anova(fit_cloglog_2, fit_cloglog_1, test = "Chisq")
+AIC(fit_cloglog_1, fit_cloglog_2)
+car::Anova(fit_cloglog_2)
+```
+
+Os ajustes continuram melhorando, portanto vamos realizar o mesmo procedimento e remover os termos de iteração com maior p-value e reajustar os modelos.
+
+#### Iteração 3
+
+```{r}
+#| label: update_3
+
+# logito
+fit_logito_3 = update(fit_logito_2, . ~ . - idade:sozinho)
+anova(fit_logito_3, fit_logito_2, test = "Chisq")
+AIC(fit_logito_2, fit_logito_3)
+car::Anova(fit_logito_3)
+
+# probito
+fit_probito_3 = update(fit_probito_2, . ~ . - classe:sozinho)
+anova(fit_probito_3, fit_probito_2, test = "Chisq")
+AIC(fit_probito_2, fit_probito_3)
+car::Anova(fit_probito_3)
+
+# complemento log-log
+fit_cloglog_3 = update(fit_cloglog_2, . ~ . - idade:sozinho)
+anova(fit_cloglog_3, fit_cloglog_2, test = "Chisq")
+AIC(fit_cloglog_2, fit_cloglog_3)
+car::Anova(fit_cloglog_3)
+```
+
+O modelo logito e cloglog já ficaram com todos os coeficientes de interação significativos. A variável "sozinho" não tem mais nenhuma interação, e é não significativa, portanto agora removeremos ela desses dois modelos. O modelo probito perderá a interação idade:sexo.
+
+#### Iteração 4
+
+```{r}
+#| label: update_4
+
+# logito
+fit_logito_4 = update(fit_logito_3, . ~ . - sozinho)
+anova(fit_logito_4, fit_logito_3, test = "Chisq")
+AIC(fit_logito_3, fit_logito_4)
+car::Anova(fit_logito_4)
+
+# probito
+fit_probito_4 = update(fit_probito_3, . ~ . - idade:sexo)
+anova(fit_probito_4, fit_probito_3, test = "Chisq")
+AIC(fit_probito_3, fit_probito_4)
+car::Anova(fit_probito_4)
+
+# complemento log-log
+fit_cloglog_4 = update(fit_cloglog_3, . ~ . - sozinho)
+anova(fit_cloglog_4, fit_cloglog_3, test = "Chisq")
+AIC(fit_cloglog_3, fit_cloglog_4)
+car::Anova(fit_cloglog_4)
+```
+
+Como última tentativa de iteração, removeremos a variável idade:sozinho do modelo probito, e idade:sexo para o modelo logito. O modelo clog-log já tem todos os coeficientes significativos
+
+#### Iteração 5
+
+```{r}
+#| label: update_5
+
+# logito
+fit_logito_5 = update(fit_logito_4, . ~ . - idade:sexo)
+anova(fit_logito_5, fit_logito_4, test = "Chisq")
+AIC(fit_logito_4, fit_logito_5)
+car::Anova(fit_logito_5)
+
+# probito
+fit_probito_5 = update(fit_probito_4, . ~ . - idade:sozinho)
+anova(fit_probito_5, fit_probito_4, test = "Chisq")
+AIC(fit_probito_4, fit_probito_5)
+car::Anova(fit_probito_5)
+```
+
+Os AICs dos modelos começaram a piorar nessa iteração, portanto voltaremos 1 passo e manteremos os modelos fit de número 4 para todos os modelos ajustados. Agora passaremos para outras análises.
+
+## Ajuste Global
+
+Faremos a comparação dos modelos encontrados com o modelo nulo, afim de obter as medidas de ajuste deles.
+
+```{r}
+#| label: tbl-ajuste-global
+#| tbl-cap: "Medidas de ajuste global dos modelos finais"
+
+fit_nulo = glm(vivo ~ 1, data = treino, family = binomial(link = "logit"))
+
+modelos_finais = list(
+  "Logito" = fit_logito_4,
+  "Probito" = fit_probito_4,
+  "Complemento log-log" = fit_cloglog_4
+)
+
+pearson_logito  = sum(residuals(fit_logito_4,  type = "pearson")^2)
+pearson_probito = sum(residuals(fit_probito_4, type = "pearson")^2)
+pearson_cloglog = sum(residuals(fit_cloglog_4, type = "pearson")^2)
+
+ajuste_global = data.frame(
+  p       = sapply(lapply(modelos_finais, coef), length),
+  desvio  = sapply(modelos_finais, deviance),
+  pearson = c(pearson_logito, pearson_probito, pearson_cloglog),
+  gl      = sapply(modelos_finais, df.residual),
+  AIC     = sapply(modelos_finais, AIC),
+  trv     = deviance(fit_nulo) - sapply(modelos_finais, deviance),
+  gl_trv  = df.residual(fit_nulo) - sapply(modelos_finais, df.residual)
+)
+ajuste_global$p_valor = pchisq(ajuste_global$trv, df = ajuste_global$gl_trv, lower.tail = FALSE)
+
+kable(ajuste_global, digits = c(0, 2, 2, 0, 2, 2, 0, 4),
+      col.names = c("p", "Desvio", "Pearson", "gl", "AIC",
+                    "TRV vs. nulo", "gl (TRV)", "Valor-p"))
+```
+
+Olhando os p-valores, todos os modelos rejeitam a hipótese nula do teste de razão de verossimilhanças que propõe que as nenhuma das variáveis seja significativamente explicativa para o modelo. Sendo assim, podemos considerar que todos os modelos tem ajuste signiticativamente melhor do que o modelo nulo.
+
+Já comparando os modelos entre si, eles tem praticamente o mesmo AIC, sendo o logito com o AIC levemente menor. Portanto por enquanto consideramos ele o modelo escolhido, mas faremos mais análises.
+
+### Multicolinearidade
+
+```{r}
+#| label: tbl-gvif
+#| tbl-cap: "Fator de inflação da variância generalizado (GVIF) das covariáveis, calculado no modelo com os efeitos principais."
+
+fit_aditivo = glm(vivo ~ classe + idade + sexo + sozinho,
+                  data = treino, family = binomial(link = "logit"))
+
+kable(car::vif(fit_aditivo), digits = 3)
+
+```
+
+Os valores de GVIF são todos pequenos e menores $\sqrt{10}$, portanto concluimos que não há multicolinearidade no modelo.
+
+### Resíduos Quantílicos
+
+```{r}
+#| label: residuos-quantilicos
+
+v = runif(nrow(treino))
+y = as.numeric(treino$vivo == "sim")
+
+# logito
+p_logito = fitted(fit_logito_4)
+a = pbinom(y - 1, size = 1, prob = p_logito)   # F(y-)
+b = pbinom(y,     size = 1, prob = p_logito)   # F(y)
+rq_logito = qnorm(a + v * (b - a))
+
+# probito
+p_probito = fitted(fit_probito_4)
+a = pbinom(y - 1, size = 1, prob = p_probito)
+b = pbinom(y,     size = 1, prob = p_probito)
+rq_probito = qnorm(a + v * (b - a))
+
+# complemento log-log
+p_cloglog = fitted(fit_cloglog_4)
+a = pbinom(y - 1, size = 1, prob = p_cloglog)
+b = pbinom(y,     size = 1, prob = p_cloglog)
+rq_cloglog = qnorm(a + v * (b - a))
+
+residuos = bind_rows(
+  data.frame(modelo = "Logito",              eta = predict(fit_logito_4),  rq = rq_logito,  treino),
+  data.frame(modelo = "Probito",             eta = predict(fit_probito_4), rq = rq_probito, treino),
+  data.frame(modelo = "Complemento log-log", eta = predict(fit_cloglog_4), rq = rq_cloglog, treino)
+) |>
+  mutate(modelo = factor(modelo, levels = names(modelos_finais)))
+```
+
+```{r}
+#| label: fig-rq-normalidade
+#| fig-cap: "Distribuição dos resíduos quantílicos aleatorizados dos três modelos finais."
+
+ggplot(residuos, aes(x = rq)) +
+  geom_histogram(bins = 20, fill = "grey80", color = "grey30") +
+  facet_wrap(~ modelo) +
+  labs(x = "Resíduo quantílico", y = "Frequência") +
+  theme_minimal()
+
+ggplot(residuos, aes(sample = rq)) +
+  stat_qq(size = 0.8, color = "grey30") +
+  stat_qq_line() +
+  facet_wrap(~ modelo) +
+  labs(x = "Quantis teóricos", y = "Quantis amostrais") +
+  theme_minimal()
+
+```
+
+```{r}
+#| label: tbl-rq-normalidade
+#| tbl-cap: "Teste de Shapiro-Wilk e número de resíduos quantílicos com valor absoluto maior que 2 e maior que 3."
+
+normalidade = data.frame(
+  W        = c(shapiro.test(rq_logito)$statistic,
+               shapiro.test(rq_probito)$statistic,
+               shapiro.test(rq_cloglog)$statistic),
+  p_valor  = c(shapiro.test(rq_logito)$p.value,
+               shapiro.test(rq_probito)$p.value,
+               shapiro.test(rq_cloglog)$p.value),
+  maior_2  = c(sum(abs(rq_logito) > 2), sum(abs(rq_probito) > 2), sum(abs(rq_cloglog) > 2)),
+  maior_3  = c(sum(abs(rq_logito) > 3), sum(abs(rq_probito) > 3), sum(abs(rq_cloglog) > 3)),
+  row.names = names(modelos_finais)
+)
+
+kable(normalidade, digits = c(4, 4, 0, 0),
+      col.names = c("W", "Valor-p", "|r| > 2", "|r| > 3"))
+```
+
+Todos os modelos não-rejeitaram a hipótese nula de normalidade dos resíduos quantílicos. Portanto, nenhum deles precisa ser reajustado.
+
+#### Influência
+
+```{r}
+#| label: fig-influencia
+#| fig-cap: "Medidas de influência dos três modelos finais. As linhas tracejadas indicam os valores de referência."
+
+n = nrow(treino)
+
+influencia = bind_rows(
+  data.frame(modelo = "Logito", id = 1:n,
+             h = hatvalues(fit_logito_4), cook = cooks.distance(fit_logito_4),
+             p = length(coef(fit_logito_4))),
+  data.frame(modelo = "Probito", id = 1:n,
+             h = hatvalues(fit_probito_4), cook = cooks.distance(fit_probito_4),
+             p = length(coef(fit_probito_4))),
+  data.frame(modelo = "Complemento log-log", id = 1:n,
+             h = hatvalues(fit_cloglog_4), cook = cooks.distance(fit_cloglog_4),
+             p = length(coef(fit_cloglog_4)))
+) |>
+  mutate(
+    modelo = factor(modelo, levels = names(modelos_finais)),
+    limite_h = 3 * p / n,
+    limite_cook = qf(0.5, p, n - p)
+  )
+
+ggplot(influencia, aes(x = id, y = h)) +
+  geom_point(size = 0.8, color = "grey40") +
+  geom_hline(aes(yintercept = limite_h), linetype = "dashed") +
+  facet_wrap(~ modelo) +
+  labs(x = "Índice", y = "Alavanca") +
+  theme_minimal()
+
+ggplot(influencia, aes(x = id, y = cook)) +
+  geom_point(size = 0.8, color = "grey40") +
+  geom_hline(aes(yintercept = limite_cook), linetype = "dashed") +
+  facet_wrap(~ modelo) +
+  labs(x = "Índice", y = "Distância de Cook") +
+  theme_minimal()
+```

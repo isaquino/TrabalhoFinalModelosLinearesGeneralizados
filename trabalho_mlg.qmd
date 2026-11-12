@@ -1,0 +1,747 @@
+---
+# Não usamos "title:" aqui de propósito: a capa é montada manualmente em
+# "include-before-body" (abaixo). Se houvesse "title:", o Quarto criaria um
+# segundo bloco de título (\maketitle) antes do sumário.
+lang: pt-BR
+format:
+  pdf:
+    documentclass: scrartcl
+    papersize: a4
+    geometry:
+      - top=2.5cm
+      - bottom=2.5cm
+      - left=2.5cm
+      - right=2.5cm
+    fontsize: 11pt
+    linestretch: 1.25
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    colorlinks: true
+    linkcolor: blue
+    urlcolor: blue
+    citecolor: blue
+    toccolor: black
+    fig-pos: "H"
+    fig-width: 6
+    fig-height: 3.8
+    df-print: kable
+    include-in-header:
+      text: |
+        \usepackage{graphicx}
+    include-before-body:
+      text: |
+        \begin{titlepage}
+        \centering
+        \includegraphics[width=0.30\textwidth]{logo_ufmg.png}\par
+        \vspace{0.6cm}
+        {\large Universidade Federal de Minas Gerais\par}
+        {\normalsize Instituto de Ciências Exatas -- Departamento de Estatística\par}
+        \vspace{2.5cm}
+        {\LARGE\bfseries Trabalho Final -- Titanic\par}
+        \vspace{2cm}
+        {\large EST079 -- Modelos Lineares Generalizados\par}
+        \vspace{0.3cm}
+        {\normalsize Professor: Fábio Nogueira Demarqui\par}
+        \vfill
+        {\large\bfseries Grupo 5\par}
+        \vspace{0.4cm}
+        \renewcommand{\arraystretch}{1.4}
+        \begin{tabular}{l@{\hspace{1.5cm}}l}
+        \textbf{Alunos} & \textbf{Matrícula} \\
+        \hline
+        Ana Carolina Sena Gonçalves & 0000000000 \\
+        Isabelle Aquino E Sarmento & 0000000000 \\
+        João Guilherme Crivellaro Prates Nogueira & 0000000000 \\
+        Mariana Fernandes Moreira & 0000000000 \\
+        Sara Kathryn Evangelista Carvalho & 0000000000 \\
+        \end{tabular}
+        \vfill
+        {\normalsize Belo Horizonte\par}
+        {\normalsize \today\par}
+        \end{titlepage}
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+{{< pagebreak >}}
+
+# Introdução
+
+O trabalho tem como base o arquivo `titanic.csv`, disponibilizado pelo professor, que contém uma amostra de passageiros do navio Titanic, com a classe em que viajavam, a idade, o sexo, se viajavam sozinhos e se sobreviveram ao naufrágio.
+
+O objetivo é modelar a probabilidade de um passageiro ter sobrevivido ao naufrágio a partir dessas informações, utilizando Modelos Lineares Generalizados.
+
+# Dados {#sec-dados}
+
+## Pacotes
+
+Vamos carregar todos os pacotes utilizados na análise.
+
+```{r imports}
+library(readr)
+library(tidyverse)
+library(rsample)
+library(car)
+library(splines2)
+```
+
+## Descrição do banco de dados
+
+A base contém 714 observações, cada uma correspondendo a um passageiro, e as seguintes variáveis:
+
+-   **vivo**: se o passageiro sobreviveu ao naufrágio (vivo ou morto);
+-   **classe**: classe do passageiro (I, II, III);
+-   **idade**: idade do passageiro em anos;
+-   **sexo**: sexo do passageiro (masculino ou feminino);
+-   **sozinho**: se o passageiro viajava sozinho (sim) ou acompanhado (não).
+
+## Importação e preparação dos dados
+
+Vamos importar os dados, conferir os valores faltantes e as linhas duplicadas, e transformar as variáveis categóricas em fatores não ordenados, com as categorias de referência `morto`, `I`, `feminino` e `nao`. As linhas duplicadas foram mantidas, pois correspondem a passageiros diferentes com os mesmos valores observados.
+
+```{r importacao}
+titanic = read_csv("titanic.csv", show_col_types = FALSE)
+
+soma_faltantes = sum(is.na(titanic))
+cat("Quantidade de valores faltantes na base:", soma_faltantes, "\n")
+
+soma_duplicatas = sum(duplicated(titanic))
+cat("Quantidade de linhas duplicadas na base:", soma_duplicatas, "\n")
+
+titanic_limpo <- titanic |>
+  mutate(
+    vivo    = factor(vivo, levels = c("nao", "sim"), labels = c("morto", "vivo")),
+    classe  = factor(classe, levels = c("I", "II", "III")),
+    sexo    = factor(sexo, levels = c("feminino", "masculino")),
+    sozinho = factor(sozinho, levels = c("nao", "sim"))
+  )
+
+summary(titanic_limpo)
+```
+
+## Divisão em conjuntos de treinamento e teste {#sec-split}
+
+Vamos fixar a semente para garantir a reprodutibilidade e dividir a base em treino (80%) e teste (20%), estratificando pela resposta. Os modelos serão ajustados no treino, e o teste será usado apenas para avaliar o desempenho preditivo do modelo final.
+
+```{r treino_teste}
+set.seed(99)
+
+titanic_split = initial_split(titanic_limpo, prop = 0.80, strata = vivo)
+titanic_split
+
+treino = training(titanic_split)
+teste  = testing(titanic_split)
+```
+
+# Análise exploratória {#sec-eda}
+
+Toda esta seção será feita apenas com o conjunto de treinamento.
+
+## Análise univariada
+
+Vamos apresentar as frequências de cada categoria das variáveis categóricas.
+
+```{r tabela_frequencias}
+treino |>
+  pivot_longer(
+    c(vivo, classe, sexo, sozinho),
+    names_to = "variavel", values_to = "categoria",
+    values_transform = as.character
+  ) |>
+  mutate(variavel = factor(variavel, levels = c("vivo", "classe", "sexo", "sozinho"))) |>
+  count(variavel, categoria) |>
+  mutate(.by = variavel, proporcao = round(n / sum(n), 3))
+```
+
+Podemos observar aqui que aproximadamente 60% dos passageiros morreram e 40% ficaram vivos. Quase metade dos passageiros faziam parte da classe III, enquanto aproximadamente 25% faziam parte das classes I e II, separadamente. Além disso, mais de 60% dos passageiros eram homens. E quase metade dos passageiros viajavam sozinhos.
+
+```{r resumo_idade}
+treino |>
+  summarise(
+    n = n(),
+    minimo = min(idade),
+    q1 = quantile(idade, 0.25),
+    mediana = median(idade),
+    media = mean(idade),
+    q3 = quantile(idade, 0.75),
+    maximo = max(idade),
+    desvio_padrao = sd(idade)
+  ) |>
+  mutate(across(everything(), ~ round(.x, 2)))
+```
+
+```{r hist_idade}
+ggplot(treino, aes(x = idade)) +
+  geom_histogram(binwidth = 5, boundary = 0, fill = "grey60", color = "white") +
+  labs(x = "Idade (anos)", y = "Frequência") +
+  theme_minimal()
+```
+
+A distribuição das idades dos passageiros vai desde os 0 até os 80 anos, com a maior parte dos passageiros entre 20 e 40 anos.
+
+## Sobrevivência segundo as covariáveis
+
+Vamos calcular a frequência relativa de mortos e vivos dentro de cada categoria das covariáveis.
+
+```{r funcao_tabela_relativa}
+tabela_relativa = function(dados, var) {
+  dados |>
+    count(across(all_of(var)), vivo) |>
+    mutate(.by = all_of(var), total = sum(n), prop = round(100 * n / total, 1)) |>
+    select(-n) |>
+    pivot_wider(names_from = vivo, values_from = prop, names_prefix = "% ")
+}
+```
+
+```{r tabela_relativa_classe}
+tabela_relativa(treino, "classe")
+```
+
+```{r tabela_relativa_sexo}
+tabela_relativa(treino, "sexo")
+```
+
+```{r tabela_relativa_sozinho}
+tabela_relativa(treino, "sozinho")
+```
+
+*Comentar as tabelas: por exemplo, "XX% dos homens morreram, enquanto apenas XX% das mulheres morreram".*
+
+```{r grafico_prop_categoricas}
+treino |>
+  pivot_longer(
+    c(classe, sexo, sozinho),
+    names_to = "variavel", values_to = "categoria",
+    values_transform = as.character
+  ) |>
+  summarise(.by = c(variavel, categoria), prop_vivo = mean(vivo == "vivo")) |>
+  ggplot(aes(x = categoria, y = prop_vivo)) +
+  geom_col(fill = "grey60") +
+  geom_text(aes(label = scales::percent(prop_vivo, accuracy = 1)), vjust = -0.4, size = 3) +
+  facet_wrap(~ variavel, scales = "free_x") +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+  labs(x = NULL, y = "Proporção de sobreviventes") +
+  theme_minimal()
+```
+
+Vamos também cruzar as covariáveis, para verificar se o efeito de uma delas muda conforme a outra.
+
+```{r tabela_relativa_classe_sexo}
+tabela_relativa(treino, c("classe", "sexo"))
+```
+
+```{r tabela_relativa_sexo_sozinho}
+tabela_relativa(treino, c("sexo", "sozinho"))
+```
+
+*Comentar: se a diferença entre homens e mulheres muda conforme a classe, ou se o efeito de viajar sozinho muda conforme o sexo, isso indica possíveis interações a serem testadas na modelagem.*
+
+## Idade
+
+Como a idade é contínua, vamos comparar sua distribuição entre mortos e vivos, e observar a proporção de sobreviventes em faixas de idade, separadamente para cada sexo.
+
+```{r boxplot_idade_vivo}
+ggplot(treino, aes(x = vivo, y = idade)) +
+  geom_boxplot() +
+  labs(x = NULL, y = "Idade (anos)") +
+  theme_minimal()
+```
+
+```{r prop_idade_sexo}
+treino |>
+  mutate(.by = sexo, faixa = cut_number(idade, n = 5)) |>
+  summarise(
+    .by = c(sexo, faixa),
+    idade_media = mean(idade),
+    prop_vivo = mean(vivo == "vivo"),
+    m = n()
+  ) |>
+  ggplot(aes(x = idade_media, y = prop_vivo, color = sexo)) +
+  geom_point(aes(size = m)) +
+  geom_line() +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+  labs(x = "Idade média da faixa (anos)", y = "Proporção de sobreviventes",
+       color = "Sexo", size = "Nº de passageiros") +
+  theme_minimal()
+```
+
+*Comentar: se a proporção de sobreviventes muda de forma suave com a idade ou se há saltos (por exemplo, nas crianças), e se as curvas dos dois sexos têm comportamentos diferentes.*
+
+## Relações entre as covariáveis
+
+Vamos verificar se as covariáveis estão associadas entre si, o que pode indicar confundimento ou multicolinearidade.
+
+```{r boxplot_idade_covariaveis}
+treino |>
+  pivot_longer(
+    c(classe, sexo, sozinho),
+    names_to = "variavel", values_to = "categoria",
+    values_transform = as.character
+  ) |>
+  ggplot(aes(x = categoria, y = idade)) +
+  geom_boxplot() +
+  facet_wrap(~ variavel, scales = "free_x") +
+  labs(x = NULL, y = "Idade (anos)") +
+  theme_minimal()
+```
+
+```{r tabela_classe_sexo_sozinho}
+treino |>
+  count(classe, sexo, sozinho) |>
+  mutate(.by = classe, proporcao = round(n / sum(n), 3))
+```
+
+*Comentar.*
+
+# Modelagem {#sec-modelagem}
+
+Como a resposta assume apenas os valores 0 (morto) e 1 (vivo), ela segue uma distribuição Bernoulli, que corresponde à distribuição binomial com $m_i = 1$. O modelo normal linear não é adequado, pois a resposta não é normal, a variância $\pi_i(1 - \pi_i)$ depende da média (heterocedasticidade) e as probabilidades estimadas poderiam sair do intervalo $[0, 1]$. Por isso, vamos ajustar modelos da família binomial, inicialmente com a ligação logito (canônica).
+
+Todos os modelos serão ajustados no conjunto de treinamento. Modelos encaixados serão comparados pelo teste da razão de verossimilhanças (diferença dos desvios), e modelos não encaixados pelo AIC.
+
+```{r funcao_teste_rv}
+# teste da razão de verossimilhanças entre dois modelos encaixados (m0 contido em m1)
+teste_rv = function(m0, m1) {
+  a = anova(m0, m1, test = "Chisq")
+  tibble(
+    gl = a$Df[2],
+    delta_desvio = round(a$Deviance[2], 3),
+    p_valor = signif(a$`Pr(>Chi)`[2], 3)
+  )
+}
+```
+
+## Modelo nulo e modelos com uma covariável
+
+Vamos ajustar o modelo nulo e um modelo para cada covariável, testando cada um contra o nulo ($H_0$: os coeficientes da covariável são iguais a zero).
+
+```{r modelos_uma_covariavel}
+fit0 = glm(vivo ~ 1, family = binomial, data = treino)
+
+modelos_uni = list(
+  classe  = glm(vivo ~ classe,  family = binomial, data = treino),
+  sexo    = glm(vivo ~ sexo,    family = binomial, data = treino),
+  idade   = glm(vivo ~ idade,   family = binomial, data = treino),
+  sozinho = glm(vivo ~ sozinho, family = binomial, data = treino)
+)
+
+map(modelos_uni, \(m) teste_rv(fit0, m)) |>
+  list_rbind(names_to = "covariavel")
+```
+
+*Comentar.*
+
+## Modelo com efeitos principais
+
+Vamos ajustar o modelo com todas as covariáveis e testar a contribuição de cada uma na presença das demais.
+
+```{r modelo_efeitos_principais}
+fit1 = glm(vivo ~ classe + sexo + idade + sozinho, family = binomial, data = treino)
+summary(fit1)
+
+# modelo nulo x modelo com efeitos principais
+teste_rv(fit0, fit1)
+
+# contribuição de cada covariável na presença das demais
+Anova(fit1)
+```
+
+*Comentar.*
+
+## Forma funcional da idade
+
+Vamos comparar a idade linear com a idade em polinômios de grau 2 e 3, em B-splines e em faixas etárias. Os modelos polinomiais são encaixados e serão comparados pelo teste da razão de verossimilhanças; os demais, pelo AIC.
+
+```{r forma_idade}
+cortes_idade = c(0, 12, 18, 30, 50, Inf)  # faixas etárias (ajustar se necessário)
+
+fit1_quad   = glm(vivo ~ classe + sexo + poly(idade, 2) + sozinho, family = binomial, data = treino)
+fit1_cub    = glm(vivo ~ classe + sexo + poly(idade, 3) + sozinho, family = binomial, data = treino)
+fit1_bsp    = glm(vivo ~ classe + sexo + bsp(idade, df = 5) + sozinho, family = binomial, data = treino)
+fit1_faixas = glm(vivo ~ classe + sexo + cut(idade, cortes_idade, include.lowest = TRUE) + sozinho,
+                  family = binomial, data = treino)
+
+# modelos encaixados: linear x quadrático x cúbico
+anova(fit1, fit1_quad, fit1_cub, test = "Chisq")
+
+# todos os modelos pelo AIC
+AIC(fit1, fit1_quad, fit1_cub, fit1_bsp, fit1_faixas)
+```
+
+```{r grafico_forma_idade}
+# probabilidade estimada em função da idade para um perfil fixo (classe III, masculino, sozinho)
+perfil = tibble(
+  idade = seq(min(treino$idade), max(treino$idade), length.out = 100),
+  classe = factor("III", levels = levels(treino$classe)),
+  sexo = factor("masculino", levels = levels(treino$sexo)),
+  sozinho = factor("sim", levels = levels(treino$sozinho))
+)
+
+list(linear = fit1, quadratico = fit1_quad, cubico = fit1_cub,
+     bspline = fit1_bsp, faixas = fit1_faixas) |>
+  map(\(m) mutate(perfil, prob = predict(m, newdata = perfil, type = "response"))) |>
+  list_rbind(names_to = "forma") |>
+  ggplot(aes(x = idade, y = prob, linetype = forma)) +
+  geom_line() +
+  labs(x = "Idade (anos)", y = "Probabilidade estimada de sobreviver", linetype = "Idade") +
+  theme_minimal()
+```
+
+*Comentar e escolher a forma da idade.*
+
+```{r decisao_idade}
+# DECISÃO: modelo base com a forma da idade escolhida (fit1, fit1_quad, fit1_cub, fit1_bsp ou fit1_faixas)
+fit_base = fit1
+```
+
+## Interações
+
+Vamos testar, uma de cada vez, as interações sugeridas pela análise exploratória, comparando cada modelo com o modelo base ($H_0$: os coeficientes da interação são iguais a zero).
+
+```{r interacoes}
+#| warning: true
+modelos_inter = list(
+  `classe:sexo`   = update(fit_base, . ~ . + classe:sexo),
+  `sexo:sozinho`  = update(fit_base, . ~ . + sexo:sozinho),
+  `idade:sexo`    = update(fit_base, . ~ . + idade:sexo),
+  `idade:classe`  = update(fit_base, . ~ . + idade:classe),
+  `classe:sozinho` = update(fit_base, . ~ . + classe:sozinho)
+)
+
+map(modelos_inter, \(m) teste_rv(fit_base, m)) |>
+  list_rbind(names_to = "interacao")
+```
+
+*Comentar e escolher as interações.*
+
+```{r decisao_interacoes}
+#| warning: true
+# DECISÃO: incluir as interações escolhidas
+fit_inter = update(fit_base, . ~ . + classe:sexo)
+
+summary(fit_inter)
+teste_rv(fit_base, fit_inter)
+Anova(fit_inter)
+```
+
+## Seleção automática
+
+Como verificação, vamos aplicar o procedimento *stepwise* baseado no AIC, partindo do modelo com efeitos principais e tendo como limite superior o modelo com todas as interações de segunda ordem.
+
+```{r stepwise}
+#| warning: true
+fit_completo = glm(vivo ~ (classe + sexo + idade + sozinho)^2, family = binomial, data = treino)
+
+fit_step = step(
+  fit1,
+  direction = "both",
+  scope = list(lower = fit0, upper = fit_completo),
+  trace = 0
+)
+
+formula(fit_step)
+fit_step$anova
+```
+
+*Comentar: comparar o modelo selecionado pelo stepwise com o escolhido passo a passo.*
+
+## Escolha da função de ligação
+
+Com o preditor linear escolhido, vamos ajustar os modelos com as ligações logito, probito e complemento log-log. Como não são encaixados, serão comparados pelo AIC.
+
+```{r ligacoes}
+#| warning: true
+# DECISÃO: preditor linear escolhido (fit_inter ou fit_step, por exemplo)
+fit_escolhido = fit_inter
+
+fit_probit  = update(fit_escolhido, family = binomial(link = "probit"))
+fit_cloglog = update(fit_escolhido, family = binomial(link = "cloglog"))
+
+AIC(fit_escolhido, fit_probit, fit_cloglog)
+```
+
+## Quadro comparativo dos modelos
+
+```{r quadro_comparativo}
+modelos = list(
+  nulo = fit0,
+  efeitos_principais = fit1,
+  idade_quadratica = fit1_quad,
+  idade_cubica = fit1_cub,
+  idade_bspline = fit1_bsp,
+  idade_faixas = fit1_faixas,
+  com_interacoes = fit_inter,
+  stepwise = fit_step,
+  probito = fit_probit,
+  cloglog = fit_cloglog
+)
+
+quadro = tibble(
+  modelo = names(modelos),
+  ligacao = map_chr(modelos, \(m) m$family$link),
+  parametros = map_int(modelos, \(m) length(coef(m))),
+  desvio = round(map_dbl(modelos, deviance), 2),
+  AIC = round(map_dbl(modelos, AIC), 2)
+) |>
+  arrange(AIC)
+
+quadro
+```
+
+```{r grafico_quadro}
+ggplot(quadro, aes(x = reorder(modelo, AIC), y = AIC)) +
+  geom_col(fill = "grey60") +
+  coord_flip() +
+  labs(x = NULL, y = "AIC") +
+  theme_minimal()
+```
+
+*Comentar e escolher o modelo.*
+
+```{r decisao_modelo}
+# DECISÃO: modelo escolhido para o diagnóstico
+modelo = fit_inter
+```
+
+# Diagnóstico do modelo {#sec-diagnostico}
+
+## Resíduos
+
+Vamos analisar os resíduos do desvio e de Pearson contra os valores ajustados e contra as covariáveis. Como a resposta assume apenas os valores 0 e 1, é esperado que os resíduos se organizem em duas faixas.
+
+```{r residuos}
+diag_modelo = treino |>
+  mutate(
+    indice = row_number(),
+    ajustado = fitted(modelo),
+    res_desvio = residuals(modelo, type = "deviance"),
+    res_pearson = residuals(modelo, type = "pearson")
+  )
+```
+
+```{r residuos_ajustados}
+diag_modelo |>
+  pivot_longer(c(res_desvio, res_pearson), names_to = "tipo", values_to = "residuo") |>
+  ggplot(aes(x = ajustado, y = residuo, color = vivo)) +
+  geom_point(alpha = 0.5) +
+  geom_hline(yintercept = 0) +
+  geom_hline(yintercept = c(-2, 2), linetype = 2) +
+  facet_wrap(~ tipo, scales = "free_y") +
+  labs(x = "Probabilidade ajustada", y = "Resíduo", color = NULL) +
+  theme_minimal()
+```
+
+```{r residuos_idade}
+ggplot(diag_modelo, aes(x = idade, y = res_desvio, color = vivo)) +
+  geom_point(alpha = 0.5) +
+  geom_hline(yintercept = 0) +
+  geom_hline(yintercept = c(-2, 2), linetype = 2) +
+  labs(x = "Idade (anos)", y = "Resíduo do desvio", color = NULL) +
+  theme_minimal()
+```
+
+```{r residuos_categoricas}
+diag_modelo |>
+  pivot_longer(
+    c(classe, sexo, sozinho),
+    names_to = "variavel", values_to = "categoria",
+    values_transform = as.character
+  ) |>
+  ggplot(aes(x = categoria, y = res_desvio)) +
+  geom_boxplot() +
+  facet_wrap(~ variavel, scales = "free_x") +
+  labs(x = NULL, y = "Resíduo do desvio") +
+  theme_minimal()
+```
+
+```{r residuos_indice}
+ggplot(diag_modelo, aes(x = indice, y = res_desvio)) +
+  geom_point(alpha = 0.5) +
+  geom_hline(yintercept = 0) +
+  geom_hline(yintercept = c(-2, 2), linetype = 2) +
+  labs(x = "Índice", y = "Resíduo do desvio") +
+  theme_minimal()
+```
+
+*Comentar.*
+
+## Pontos de alavanca e observações influentes
+
+Vamos calcular as medidas de influência ($h_{ii}$, distância de Cook, DFBetaS, DFFitS e COVRATIO) e destacar as observações consideradas influentes.
+
+```{r influencia}
+infl = influence.measures(modelo)
+
+p = length(coef(modelo))
+n = nrow(treino)
+
+pontos_influentes = which(apply(infl$is.inf, 1, any))
+cat("Quantidade de observações destacadas:", length(pontos_influentes), "\n")
+
+summary(infl)
+```
+
+```{r grafico_alavanca}
+diag_modelo |>
+  mutate(h = hatvalues(modelo)) |>
+  ggplot(aes(x = indice, y = h)) +
+  geom_point(alpha = 0.5) +
+  geom_hline(yintercept = 3 * p / n, linetype = 2) +
+  labs(x = "Índice", y = expression(h[ii])) +
+  theme_minimal()
+```
+
+```{r grafico_cook}
+diag_modelo |>
+  mutate(cook = cooks.distance(modelo)) |>
+  ggplot(aes(x = indice, y = cook)) +
+  geom_point(alpha = 0.5) +
+  geom_hline(yintercept = qf(0.5, p, n - p), linetype = 2) +
+  labs(x = "Índice", y = "Distância de Cook") +
+  theme_minimal()
+```
+
+```{r tabela_influentes}
+treino |>
+  mutate(indice = row_number(), ajustado = round(fitted(modelo), 3)) |>
+  slice(pontos_influentes)
+```
+
+*Comentar.*
+
+## Reajuste sem as observações influentes
+
+Vamos reajustar o modelo sem as observações destacadas e verificar a variação percentual das estimativas.
+
+```{r reajuste_sem_influentes}
+#| warning: true
+# DECISÃO: observações a serem retiradas (por padrão, todas as destacadas)
+remover = pontos_influentes
+
+if (length(remover) > 0) {
+  modelo_sem = update(modelo, data = treino[-remover, ])
+
+  tibble(
+    termo = names(coef(modelo)),
+    completo = round(coef(modelo), 4),
+    sem_influentes = round(coef(modelo_sem)[names(coef(modelo))], 4),
+    variacao_pct = round(100 * (sem_influentes - completo) / completo, 1)
+  ) |> print()
+
+  Anova(modelo_sem)
+}
+```
+
+*Comentar: se as estimativas mudam muito e se as conclusões dos testes se mantêm.*
+
+## Multicolinearidade
+
+```{r multicolinearidade}
+# GVIF do modelo com efeitos principais (sem interações)
+vif(fit1)
+```
+
+*Comentar.*
+
+# Avaliação do desempenho preditivo {#sec-predicao}
+
+## Probabilidades preditas
+
+Vamos obter as probabilidades estimadas de sobrevivência para o conjunto de teste e classificar como vivo os passageiros com probabilidade maior que 0,5.
+
+```{r predicao}
+teste_pred = teste |>
+  mutate(
+    prob = predict(modelo, newdata = teste, type = "response"),
+    classificacao = factor(if_else(prob > 0.5, "vivo", "morto"), levels = c("morto", "vivo"))
+  )
+
+ggplot(teste_pred, aes(x = vivo, y = prob)) +
+  geom_boxplot() +
+  geom_hline(yintercept = 0.5, linetype = 2) +
+  labs(x = "Observado", y = "Probabilidade estimada de sobreviver") +
+  theme_minimal()
+```
+
+## Matriz de confusão e métricas
+
+```{r matriz_confusao}
+matriz = table(Observado = teste_pred$vivo, Predito = teste_pred$classificacao)
+matriz
+
+tibble(
+  acuracia = mean(teste_pred$vivo == teste_pred$classificacao),
+  sensibilidade = matriz["vivo", "vivo"] / sum(matriz["vivo", ]),
+  especificidade = matriz["morto", "morto"] / sum(matriz["morto", ]),
+  taxa_base = mean(teste_pred$vivo == "morto")
+) |>
+  mutate(across(everything(), ~ round(.x, 3)))
+```
+
+*Comentar: a acurácia deve ser comparada com a taxa base, isto é, a acurácia de classificar todos os passageiros como mortos.*
+
+# Modelo final {#sec-final}
+
+## Estimativas e razões de chances
+
+```{r estimativas_finais}
+summary(modelo)
+Anova(modelo)
+
+# razões de chances com intervalos de 95% (válido para a ligação logito)
+tibble(
+  termo = names(coef(modelo)),
+  estimativa = coef(modelo),
+  razao_chances = exp(coef(modelo)),
+  li_95 = exp(confint.default(modelo)[, 1]),
+  ls_95 = exp(confint.default(modelo)[, 2])
+) |>
+  mutate(across(where(is.numeric), ~ round(.x, 4)))
+```
+
+## Equação do modelo ajustado
+
+```{r equacao}
+cat(paste0(round(coef(modelo), 4), " * ", names(coef(modelo)), collapse = "\n+ "))
+```
+
+*Escrever a equação com base na saída acima, por exemplo:* $\log\{\hat{\pi}_i/(1 - \hat{\pi}_i)\} = \hat{\beta}_0 + \hat{\beta}_1 I_i\{\text{classe II}\} + \cdots$
+
+## Probabilidades estimadas
+
+Vamos construir as curvas da probabilidade estimada de sobrevivência em função da idade, para cada combinação das covariáveis categóricas, com intervalos de 95% obtidos pelo método delta.
+
+```{r curvas_probabilidade}
+#| fig-height: 5
+grade = expand_grid(
+  idade = seq(min(treino$idade), max(treino$idade), length.out = 100),
+  classe = factor(levels(treino$classe), levels = levels(treino$classe)),
+  sexo = factor(levels(treino$sexo), levels = levels(treino$sexo)),
+  sozinho = factor(levels(treino$sozinho), levels = levels(treino$sozinho))
+)
+
+pred_grade = predict(modelo, newdata = grade, type = "response", se.fit = TRUE)
+
+grade |>
+  mutate(
+    prob = pred_grade$fit,
+    li = pmax(prob - 1.96 * pred_grade$se.fit, 0),
+    ls = pmin(prob + 1.96 * pred_grade$se.fit, 1)
+  ) |>
+  ggplot(aes(x = idade, y = prob, color = sexo, fill = sexo)) +
+  geom_ribbon(aes(ymin = li, ymax = ls), alpha = 0.2, color = NA) +
+  geom_line() +
+  facet_grid(sozinho ~ classe, labeller = label_both) +
+  labs(x = "Idade (anos)", y = "Probabilidade estimada de sobreviver",
+       color = "Sexo", fill = "Sexo") +
+  theme_minimal()
+```
+
+*Interpretar os efeitos.*
+
+# Conclusões {#sec-conclusao}
+
+*Resumir os fatores associados à sobrevivência, o modelo escolhido e seu desempenho preditivo, e comentar as limitações: a base contém apenas os passageiros com idade registrada, parte das idades é estimada e os dados são observacionais.*
