@@ -1,8 +1,25 @@
 ---
-title: "Rascunho - Trabalho Prático Modelos Lineares Generalizados"
-format: html
+title: "Trabalho Prático de MLG — análise e contribuição de Mariana"
+format:
+  html:
+    toc: true
+    number-sections: false
+    embed-resources: true
+execute:
+  echo: true
+  warning: true
+  message: false
 editor: visual
 ---
+
+<!-- Revisão proposta para discussão pelo grupo. Os ajustes originais foram
+mantidos; comentários CONTRIBUIÇÃO MARIANA identificam as inclusões. -->
+
+Este arquivo reúne o desenvolvimento original e uma contribuição complementar:
+comparação explícita dos modelos candidatos, interpretação das interações,
+exame de observações influentes e avaliação no conjunto de teste. Os acréscimos
+estão identificados por comentários no código-fonte e pelos títulos das seções 5 a 8.
+As conclusões são associativas e se restringem à amostra analisada.
 
 # 0 - Setup
 
@@ -13,10 +30,21 @@ editor: visual
 #| message: false
 #| warning: false
 
-library(tidyverse)
-library(tidymodels) 
-library(knitr)      
-library(emmeans)
+# Pacotes efetivamente usados. Execute a instalação uma vez no Console,
+# se necessário (não é preciso instalar todo o tidymodels):
+# install.packages(c("readr", "dplyr", "ggplot2", "rsample", "knitr", "car"))
+
+pacotes = c("readr", "dplyr", "ggplot2", "rsample", "knitr", "car")
+faltantes = pacotes[!vapply(pacotes, requireNamespace, logical(1), quietly = TRUE)]
+if (length(faltantes) > 0) {
+  stop("Instale no Console os pacotes: ", paste(faltantes, collapse = ", "),
+       ". Depois execute novamente o documento.")
+}
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(rsample)
+library(knitr)
 ```
 
 # 1 - Preparação dos Dados
@@ -42,6 +70,7 @@ A base de dados contém informações de 714 passageiros do navio Titanic e cinc
 
 titanic = titanic_bruto |>
   mutate(
+    id_obs  = row_number(), # CONTRIBUIÇÃO MARIANA: linha original para rastrear observações
     vivo    = factor(vivo,    levels = c("nao", "sim")),                       # nao = 0, sim = 1
     classe  = factor(classe,  levels = c("I", "II", "III"), ordered = FALSE),  # referência: I
     sexo    = factor(sexo,    levels = c("feminino", "masculino")),            # feminino = 0, masculino = 1
@@ -167,7 +196,7 @@ ggplot(titanic, aes(x = idade, color = vivo, linetype = vivo)) +
 
 Para fabricar um modelo dos MLGs, é preciso escolher uma distribuição da família exponencial de distribuições para a variável resposta. No nosso caso, a variável "vivo", que indica se o passageiro sobreviveu ou não à tragedia do titanic, é uma variável da natureza binária (sim/não, 1/0). Por sua natureza, nossa variável resposta $Y$ segue uma distribuição **Bernoulli**, ou Binomial com 1 ensaio.
 
-Seja $Y_i$ uma variável aleatória com $m_i$ ensaios e probabilidade de sucesso $\pi_i$, sua distribuição de probabilidade é dada por:
+Condicionalmente às covariáveis do passageiro $i$, assume-se que $Y_i$ é Bernoulli com probabilidade de sobrevivência $\pi_i$:
 
 $$
 Y_i \sim \text{Bernoulli(}\pi_i)
@@ -188,7 +217,7 @@ $$
 
 em que $I_i$ vale 1 se o i-ésimo passageiro pertence à categoria indicada e 0 caso contrário.
 
-E os termos de interação serão os seguintes:
+Exemplos de termos de interação são os seguintes (o código inicial também inclui `classe:idade`, `classe:sozinho` e `idade:sozinho`):
 
 $$
 \begin{aligned}
@@ -200,13 +229,13 @@ $$
 
 ## Função de Ligação
 
-Nos MLGs, a função de ligação será o que faz a ponte entre a variável resposta e o preditor linear.
+Nos MLGs, a função de ligação relaciona a média condicional da resposta ao preditor linear. Neste caso, $g(\pi_i)=\eta_i$, em que $\pi_i=E(Y_i\mid x_i)$.
 
-No caso da distribuição bernoulli, a função de ligação canônica é o **logito**, que permite interpretar os coeficientes do modelo como razões de chances. Porém, também podemos testar outras ligações, como a probito e a complemento log-log.
+No caso da distribuição bernoulli, a função de ligação canônica é o **logito**, na qual contrastes no preditor linear, após exponenciação, correspondem a razões de chances. Com interações, esses contrastes dependem do perfil considerado. Porém, também podemos testar outras ligações, como a probito e a complemento log-log.
 
 ## Dispersão
 
-Como estaremos na família Bernoulli/Binomial, o parâmetro de dispersão da variável resposta é tido como 1, fixo. Portanto o desvio residual não pode ser usado como teste de ajuste para os modelos.
+No modelo Bernoulli, a dispersão é fixada em 1 e a variância condicional é $\pi_i(1-\pi_i)$. Para dados binários individuais, a aproximação do desvio residual por uma distribuição qui-quadrado não deve ser aplicada automaticamente como teste absoluto de ajuste. Diferenças de desvios entre modelos aninhados continuam sendo utilizadas nos testes de razão de verossimilhanças, sob as condições usuais.
 
 # 4 - Ajuste do Modelo
 
@@ -214,7 +243,7 @@ Como estaremos na família Bernoulli/Binomial, o parâmetro de dispersão da var
 
 Para garantia de reprodutibilidade do código, fixaremos uma seed a partir daqui.
 
-Faremos a divisão da base de dados em treino (75%) e teste (25%), para impedir que o modelo tenha problemas com overfitting. Além disso, vamos estratificar os conjuntos de treino e teste, para garantir que o modelo seja treinado com uma quantidade balanceada de vivos/mortos com relação à base de teste.
+Faremos a divisão da base em treinamento (75%) e teste (25%). A separação permite avaliar a generalização, mas não impede, por si só, o sobreajuste. A estratificação por sobrevivência mantém proporções semelhantes às da base; não impõe uma divisão de 50% entre sobreviventes e não sobreviventes. A seleção de termos e da ligação será feita apenas no treinamento. O teste será utilizado após essa escolha.
 
 ```{r}
 #| label: divisao-treino-teste
@@ -266,7 +295,7 @@ kable(comparacao_ligacoes, digits = 2)
 
 ### Remoção de Termos Não-Significativos
 
-Removeremos os termos com os maiores p-values, começando pelas iterações, enquanto os ajustes melhorarem (AICs menores) e/ou algum p-value for maior que 5%.
+A seguir é preservada a sequência de simplificação originalmente explorada pelo grupo. AIC e testes de significância são critérios diferentes e podem discordar. Na contribuição complementar, comparamos todos os candidatos percorridos e escolhemos o menor AIC dentro de cada ligação. Mantemos os efeitos principais de variáveis presentes em interações, respeitando a hierarquia do modelo. Essa busca não é exaustiva e a inferência posterior não incorpora a incerteza da seleção.
 
 ```{r}
 #| label: anova_1
@@ -301,7 +330,7 @@ AIC(fit_cloglog, fit_cloglog_1)
 car::Anova(fit_cloglog_1)
 ```
 
-O ajuste de nenhum dos modelos piorou. Portanto continuaremos com os novos modelos e removeremos novamente os termos não-significativos de cada, sendo classe:sozinho para o logito e o cloglog, e classe:idade para o probito.
+Nesta primeira retirada, os testes não detectam perda de ajuste ao nível de 5% e os AICs diminuem. Continuamos a sequência avaliando retirar `classe:sozinho` no logito e no complemento log-log, e `classe:idade` no probito.
 
 #### Iteração 2
 
@@ -327,7 +356,7 @@ AIC(fit_cloglog_1, fit_cloglog_2)
 car::Anova(fit_cloglog_2)
 ```
 
-Os ajustes continuram melhorando, portanto vamos realizar o mesmo procedimento e remover os termos de iteração com maior p-value e reajustar os modelos.
+Continuamos a sequência de simplificação para comparar os candidatos resultantes. A melhora do AIC será verificada explicitamente: uma retirada não significativa em um teste a 5% pode, ainda assim, aumentar o AIC.
 
 #### Iteração 3
 
@@ -353,7 +382,7 @@ AIC(fit_cloglog_2, fit_cloglog_3)
 car::Anova(fit_cloglog_3)
 ```
 
-O modelo logito e cloglog já ficaram com todos os coeficientes de interação significativos. A variável "sozinho" não tem mais nenhuma interação, e é não significativa, portanto agora removeremos ela desses dois modelos. O modelo probito perderá a interação idade:sexo.
+Neste passo, a variável `sozinho` já não participa de interações no logito e no complemento log-log, e avaliamos sua retirada. No probito, avaliamos retirar `idade:sexo`. Testes de um termo com vários graus de liberdade, como `classe:sexo`, não são equivalentes aos testes de cada coeficiente apresentado em `summary()`.
 
 #### Iteração 4
 
@@ -379,7 +408,7 @@ AIC(fit_cloglog_3, fit_cloglog_4)
 car::Anova(fit_cloglog_4)
 ```
 
-Como última tentativa de iteração, removeremos a variável idade:sozinho do modelo probito, e idade:sexo para o modelo logito. O modelo clog-log já tem todos os coeficientes significativos
+Como último passo da sequência original, avaliamos retirar `idade:sozinho` no probito e `idade:sexo` no logito. O caminho do complemento log-log termina na iteração 4; isso não significa que todos os seus coeficientes individuais sejam significativos.
 
 #### Iteração 5
 
@@ -399,7 +428,62 @@ AIC(fit_probito_4, fit_probito_5)
 car::Anova(fit_probito_5)
 ```
 
-Os AICs dos modelos começaram a piorar nessa iteração, portanto voltaremos 1 passo e manteremos os modelos fit de número 4 para todos os modelos ajustados. Agora passaremos para outras análises.
+<!-- INÍCIO CONTRIBUIÇÃO MARIANA: seleção entre os candidatos já ajustados -->
+
+### Comparação explícita do caminho de seleção
+
+A quinta iteração aumenta o AIC no logito e no probito. Entretanto, retornar
+simplesmente à iteração 4 de todas as ligações não recupera necessariamente o
+melhor candidato já avaliado. Por isso, organizamos o caminho completo abaixo.
+O menor AIC é um critério de compromisso entre ajuste e número de parâmetros;
+não exige que cada coeficiente tenha valor-p abaixo de 5%.
+
+```{r}
+#| label: mariana-caminho-aic
+caminhos = list(
+  Logito = list(fit_logito, fit_logito_1, fit_logito_2, fit_logito_3,
+                fit_logito_4, fit_logito_5),
+  Probito = list(fit_probito, fit_probito_1, fit_probito_2, fit_probito_3,
+                 fit_probito_4, fit_probito_5),
+  `Complemento log-log` = list(fit_cloglog, fit_cloglog_1, fit_cloglog_2,
+                              fit_cloglog_3, fit_cloglog_4)
+)
+
+caminho_aic = bind_rows(lapply(names(caminhos), function(nome) {
+  ms = caminhos[[nome]]
+  data.frame(ligacao = nome, iteracao = seq_along(ms) - 1L,
+             parametros = vapply(ms, function(m) length(coef(m)), integer(1)),
+             desvio = vapply(ms, deviance, numeric(1)),
+             AIC = vapply(ms, AIC, numeric(1)))
+}))
+caminho_aic = caminho_aic |>
+  group_by(ligacao) |>
+  mutate(delta_AIC = AIC - min(AIC), escolhido = AIC == min(AIC)) |>
+  ungroup()
+kable(caminho_aic, digits = 3)
+
+# Menor AIC entre os candidatos avaliados dentro de cada ligação.
+modelos_finais = lapply(caminhos, function(ms) {
+  ms[[which.min(vapply(ms, AIC, numeric(1)))]]
+})
+melhor_ligacao = names(which.min(vapply(modelos_finais, AIC, numeric(1))))
+modelo_final = modelos_finais[[melhor_ligacao]]
+
+formulas_finais = data.frame(
+  ligacao = names(modelos_finais),
+  formula = vapply(modelos_finais, function(m)
+    paste(deparse(formula(m)), collapse = " "), character(1))
+)
+kable(formulas_finais)
+```
+
+Neste conjunto de treinamento, a comparação seleciona a iteração 4 do logito,
+a iteração 2 do probito e a iteração 4 do complemento log-log. O logito tem o
+menor AIC entre os candidatos avaliados. A diferença pequena para o complemento
+log-log indica que o AIC oferece pouca separação entre essas duas alternativas.
+A escolha é feita antes de examinar os resultados no teste.
+
+<!-- FIM CONTRIBUIÇÃO MARIANA: seleção -->
 
 ## Ajuste Global
 
@@ -411,15 +495,11 @@ Faremos a comparação dos modelos encontrados com o modelo nulo, afim de obter 
 
 fit_nulo = glm(vivo ~ 1, data = treino, family = binomial(link = "logit"))
 
-modelos_finais = list(
-  "Logito" = fit_logito_4,
-  "Probito" = fit_probito_4,
-  "Complemento log-log" = fit_cloglog_4
-)
+# CONTRIBUIÇÃO MARIANA: modelos_finais foi definido pelo caminho de AIC acima.
 
-pearson_logito  = sum(residuals(fit_logito_4,  type = "pearson")^2)
-pearson_probito = sum(residuals(fit_probito_4, type = "pearson")^2)
-pearson_cloglog = sum(residuals(fit_cloglog_4, type = "pearson")^2)
+pearson_logito  = sum(residuals(modelos_finais[["Logito"]],  type = "pearson")^2)
+pearson_probito = sum(residuals(modelos_finais[["Probito"]], type = "pearson")^2)
+pearson_cloglog = sum(residuals(modelos_finais[["Complemento log-log"]], type = "pearson")^2)
 
 ajuste_global = data.frame(
   p       = sapply(lapply(modelos_finais, coef), length),
@@ -439,7 +519,7 @@ kable(ajuste_global, digits = c(0, 2, 2, 0, 2, 2, 0, 4),
 
 Olhando os p-valores, todos os modelos rejeitam a hipótese nula do teste de razão de verossimilhanças que propõe que as nenhuma das variáveis seja significativamente explicativa para o modelo. Sendo assim, podemos considerar que todos os modelos tem ajuste signiticativamente melhor do que o modelo nulo.
 
-Já comparando os modelos entre si, eles tem praticamente o mesmo AIC, sendo o logito com o AIC levemente menor. Portanto por enquanto consideramos ele o modelo escolhido, mas faremos mais análises.
+Entre os candidatos selecionados por ligação, o logito apresenta o menor AIC, muito próximo do complemento log-log. O probito selecionado é o da iteração 2; por isso, suas medidas e diagnósticos diferem da versão que mantinha a iteração 4. A proximidade dos AICs deve ser considerada ao discutir a escolha.
 
 ### Multicolinearidade
 
@@ -454,38 +534,40 @@ kable(car::vif(fit_aditivo), digits = 3)
 
 ```
 
-Os valores de GVIF são todos pequenos e menores $\sqrt{10}$, portanto concluimos que não há multicolinearidade no modelo.
+O resultado mostra GVIF, os graus de liberdade de cada termo e o GVIF ajustado, $GVIF^{1/(2\,Df)}$. Essas colunas têm escalas diferentes e não devem ser comparadas indistintamente a um mesmo limite. Este cálculo descreve somente o modelo aditivo usado nesta subseção; não permite concluir, isoladamente, sobre a colinearidade do modelo final com interações. Os coeficientes de efeitos principais também dependem da escolha da origem da idade.
 
 ### Resíduos Quantílicos
 
 ```{r}
 #| label: residuos-quantilicos
 
+# CONTRIBUIÇÃO MARIANA: semente própria para tornar o diagnóstico reproduzível.
+set.seed(2026)
 v = runif(nrow(treino))
 y = as.numeric(treino$vivo == "sim")
 
 # logito
-p_logito = fitted(fit_logito_4)
+p_logito = fitted(modelos_finais[["Logito"]])
 a = pbinom(y - 1, size = 1, prob = p_logito)   # F(y-)
 b = pbinom(y,     size = 1, prob = p_logito)   # F(y)
 rq_logito = qnorm(a + v * (b - a))
 
 # probito
-p_probito = fitted(fit_probito_4)
+p_probito = fitted(modelos_finais[["Probito"]])
 a = pbinom(y - 1, size = 1, prob = p_probito)
 b = pbinom(y,     size = 1, prob = p_probito)
 rq_probito = qnorm(a + v * (b - a))
 
 # complemento log-log
-p_cloglog = fitted(fit_cloglog_4)
+p_cloglog = fitted(modelos_finais[["Complemento log-log"]])
 a = pbinom(y - 1, size = 1, prob = p_cloglog)
 b = pbinom(y,     size = 1, prob = p_cloglog)
 rq_cloglog = qnorm(a + v * (b - a))
 
 residuos = bind_rows(
-  data.frame(modelo = "Logito",              eta = predict(fit_logito_4),  rq = rq_logito,  treino),
-  data.frame(modelo = "Probito",             eta = predict(fit_probito_4), rq = rq_probito, treino),
-  data.frame(modelo = "Complemento log-log", eta = predict(fit_cloglog_4), rq = rq_cloglog, treino)
+  data.frame(modelo = "Logito",              eta = predict(modelos_finais[["Logito"]]),  rq = rq_logito,  treino),
+  data.frame(modelo = "Probito",             eta = predict(modelos_finais[["Probito"]]), rq = rq_probito, treino),
+  data.frame(modelo = "Complemento log-log", eta = predict(modelos_finais[["Complemento log-log"]]), rq = rq_cloglog, treino)
 ) |>
   mutate(modelo = factor(modelo, levels = names(modelos_finais)))
 ```
@@ -529,7 +611,7 @@ kable(normalidade, digits = c(4, 4, 0, 0),
       col.names = c("W", "Valor-p", "|r| > 2", "|r| > 3"))
 ```
 
-Todos os modelos não-rejeitaram a hipótese nula de normalidade dos resíduos quantílicos. Portanto, nenhum deles precisa ser reajustado.
+Os resíduos quantílicos são aleatorizados: a semente torna esta realização reproduzível. Valores-p acima de 5% significam ausência de rejeição da normalidade nessa avaliação; não demonstram que o modelo está correto nem dispensam outros diagnósticos. A interpretação deve considerar os gráficos, a influência das observações e a avaliação preditiva. Após a atualização dos candidatos, devem ser usados os resultados produzidos pela tabela, e não conclusões numéricas de versões anteriores.
 
 #### Influência
 
@@ -541,14 +623,14 @@ n = nrow(treino)
 
 influencia = bind_rows(
   data.frame(modelo = "Logito", id = 1:n,
-             h = hatvalues(fit_logito_4), cook = cooks.distance(fit_logito_4),
-             p = length(coef(fit_logito_4))),
+             h = hatvalues(modelos_finais[["Logito"]]), cook = cooks.distance(modelos_finais[["Logito"]]),
+             p = length(coef(modelos_finais[["Logito"]]))),
   data.frame(modelo = "Probito", id = 1:n,
-             h = hatvalues(fit_probito_4), cook = cooks.distance(fit_probito_4),
-             p = length(coef(fit_probito_4))),
+             h = hatvalues(modelos_finais[["Probito"]]), cook = cooks.distance(modelos_finais[["Probito"]]),
+             p = length(coef(modelos_finais[["Probito"]]))),
   data.frame(modelo = "Complemento log-log", id = 1:n,
-             h = hatvalues(fit_cloglog_4), cook = cooks.distance(fit_cloglog_4),
-             p = length(coef(fit_cloglog_4)))
+             h = hatvalues(modelos_finais[["Complemento log-log"]]), cook = cooks.distance(modelos_finais[["Complemento log-log"]]),
+             p = length(coef(modelos_finais[["Complemento log-log"]])))
 ) |>
   mutate(
     modelo = factor(modelo, levels = names(modelos_finais)),
@@ -570,3 +652,425 @@ ggplot(influencia, aes(x = id, y = cook)) +
   labs(x = "Índice", y = "Distância de Cook") +
   theme_minimal()
 ```
+
+<!-- INÍCIO CONTRIBUIÇÃO MARIANA: interpretação, sensibilidade e teste -->
+
+# 5 - Interpretação do modelo selecionado
+
+O menor AIC no treinamento identifica o logito como modelo principal entre os
+candidatos avaliados. Ele mantém `classe`, `idade` e `sexo`, além das interações
+`classe:idade`, `classe:sexo` e `idade:sexo`. A variável `sozinho` foi retirada
+deste candidato. Isso não demonstra ausência de associação em qualquer
+população: significa que, neste caminho de seleção e nesta amostra de
+aprendizado, sua manutenção não foi favorecida.
+
+## Coeficientes e incerteza
+
+```{r}
+#| label: mariana-coeficientes
+coef_resumo = summary(modelo_final)$coefficients
+z_975 = qnorm(0.975)
+tabela_coef = data.frame(
+  termo = rownames(coef_resumo),
+  estimativa = coef_resumo[, 1],
+  erro_padrao = coef_resumo[, 2],
+  IC95_inferior = coef_resumo[, 1] - z_975 * coef_resumo[, 2],
+  IC95_superior = coef_resumo[, 1] + z_975 * coef_resumo[, 2],
+  valor_p = coef_resumo[, 4], row.names = NULL
+)
+kable(tabela_coef, digits = 4)
+```
+
+Os intervalos acima são aproximações de Wald, condicionais ao modelo escolhido.
+Eles não incorporam a incerteza causada pela seleção de termos. A idade foi
+mantida em anos, sem centralização. Assim, o intercepto corresponde a uma
+passageira da primeira classe com idade zero, e os coeficientes principais de
+classe e sexo referem-se à idade zero. Essas referências matemáticas não devem
+ser confundidas com efeitos médios sobre todos os passageiros.
+
+No logito, a equação é:
+
+$$
+\begin{aligned}
+\log\left(\frac{\pi_i}{1-\pi_i}\right)
+={}&\beta_0+\beta_{II}I_{II,i}+\beta_{III}I_{III,i}
++\beta_a a_i+\beta_m I_{m,i}\\
+&+\beta_{II,a}I_{II,i}a_i+\beta_{III,a}I_{III,i}a_i\\
+&+\beta_{II,m}I_{II,i}I_{m,i}+\beta_{III,m}I_{III,i}I_{m,i}
++\beta_{a,m}a_iI_{m,i}.
+\end{aligned}
+$$
+
+Aqui, $a_i$ é a idade e $I$ indica pertencimento à categoria subscrita. A
+probabilidade é obtida por $\pi_i=1/(1+e^{-\eta_i})$. Não é necessário sortear
+uma variável Bernoulli para calcular ou interpretar essa probabilidade.
+
+## Razões de chances que consideram as interações
+
+Em vez de interpretar `exp(coef)` como um efeito único para todos os
+passageiros, calculamos contrastes entre perfis. A razão de chances de um homem
+em relação a uma mulher de mesma classe e idade $a$ é:
+
+$$
+OR_{M/F}(a,c)=\exp\{\beta_m+\beta_{a,m}a+
+\beta_{II,m}I(c=II)+\beta_{III,m}I(c=III)\}.
+$$
+
+Para uma diferença de dez anos de idade, dentro de uma mesma classe e sexo:
+
+$$
+OR_{+10}(c,s)=\exp\left[10\{\beta_a+
+\beta_{II,a}I(c=II)+\beta_{III,a}I(c=III)+\beta_{a,m}I(s=M)\}\right].
+$$
+
+```{r}
+#| label: mariana-contrastes
+# A variância do contraste usa também as covariâncias dos coeficientes.
+contraste_logito = function(modelo, perfil_a, perfil_b, descricao) {
+  stopifnot(modelo$family$link == "logit")
+  tt = delete.response(terms(modelo))
+  xa = model.matrix(tt, perfil_a, contrasts.arg = modelo$contrasts,
+                    xlev = modelo$xlevels)
+  xb = model.matrix(tt, perfil_b, contrasts.arg = modelo$contrasts,
+                    xlev = modelo$xlevels)
+  L = as.numeric(xa - xb)
+  estimativa = sum(L * coef(modelo))
+  ep = sqrt(as.numeric(t(L) %*% vcov(modelo) %*% L))
+  data.frame(comparacao = descricao, OR = exp(estimativa),
+             IC95_inferior = exp(estimativa - qnorm(.975) * ep),
+             IC95_superior = exp(estimativa + qnorm(.975) * ep))
+}
+
+perfil = function(classe, idade, sexo) {
+  data.frame(classe = classe, idade = idade, sexo = sexo, sozinho = "nao")
+}
+
+or_sexo = bind_rows(lapply(levels(titanic$classe), function(cl) {
+  contraste_logito(modelo_final, perfil(cl, 30, "masculino"),
+                   perfil(cl, 30, "feminino"),
+                   paste("Homem / mulher, 30 anos, classe", cl))
+}))
+or_idade = bind_rows(lapply(levels(titanic$classe), function(cl) {
+  bind_rows(lapply(levels(titanic$sexo), function(sx) {
+    contraste_logito(modelo_final, perfil(cl, 40, sx), perfil(cl, 30, sx),
+                     paste("40 / 30 anos,", sx, ", classe", cl))
+  }))
+}))
+kable(or_sexo, digits = 3)
+kable(or_idade, digits = 3)
+```
+
+Uma OR de 0,20 indica chances estimadas correspondentes a 20% das chances do
+perfil de referência, ou uma redução de 80% nas chances. Isso não equivale a
+uma queda de 80% na probabilidade, nem a uma queda de 80 pontos percentuais.
+Se o intervalo inclui 1, o contraste não apresenta evidência de diferença ao
+nível de 5% pelo intervalo de Wald utilizado. Isso não demonstra igualdade.
+
+## Probabilidades previstas para perfis
+
+```{r}
+#| label: mariana-perfis
+# Intervalos pontuais: estimados na escala da ligação e transformados de volta.
+probabilidades_ic = function(modelo, novos_dados) {
+  pr = predict(modelo, newdata = novos_dados, type = "link", se.fit = TRUE)
+  transform(novos_dados,
+            probabilidade = modelo$family$linkinv(pr$fit),
+            IC95_inferior = modelo$family$linkinv(pr$fit - qnorm(.975) * pr$se.fit),
+            IC95_superior = modelo$family$linkinv(pr$fit + qnorm(.975) * pr$se.fit))
+}
+
+perfis_30 = expand.grid(classe = levels(titanic$classe), idade = 30,
+                        sexo = levels(titanic$sexo), sozinho = "nao",
+                        stringsAsFactors = FALSE)
+prob_30 = probabilidades_ic(modelo_final, perfis_30)
+kable(prob_30[, c("classe", "idade", "sexo", "probabilidade",
+                  "IC95_inferior", "IC95_superior")], digits = 3)
+
+# Limita a curva ao intervalo de idades observado em cada classe e sexo no treino.
+limites_idade = treino |>
+  group_by(classe, sexo) |>
+  summarise(minimo = min(idade), maximo = max(idade), .groups = "drop")
+grade = expand.grid(classe = levels(titanic$classe),
+                    idade = seq(min(treino$idade), max(treino$idade), length.out = 160),
+                    sexo = levels(titanic$sexo), sozinho = "nao",
+                    stringsAsFactors = FALSE) |>
+  left_join(limites_idade, by = c("classe", "sexo")) |>
+  filter(idade >= minimo, idade <= maximo)
+curvas = probabilidades_ic(modelo_final, grade)
+
+ggplot(curvas, aes(x = idade, y = probabilidade, color = sexo, fill = sexo)) +
+  geom_ribbon(aes(ymin = IC95_inferior, ymax = IC95_superior),
+              alpha = .14, color = NA) +
+  geom_line(linewidth = .85) +
+  facet_wrap(~ classe, labeller = label_both) +
+  scale_y_continuous(limits = c(0, 1), labels = function(x) paste0(100 * x, "%")) +
+  labs(x = "Idade (anos)", y = "Probabilidade estimada de sobrevivência",
+       color = "Sexo", fill = "Sexo",
+       caption = "Faixas: IC95% pontuais de Wald, sem incorporar a seleção do modelo.") +
+  theme_minimal() + theme(legend.position = "bottom")
+```
+
+As previsões comparam perfis sob o modelo ajustado, e não proporções brutas.
+As faixas representam incerteza sobre a probabilidade média do perfil; não são
+intervalos de previsão de uma resposta individual 0/1. Mesmo dentro da faixa
+observada de idades, alguns perfis podem ter poucos passageiros e estimativas
+instáveis. As diferenças entre classes ou sexos não devem ser interpretadas
+como efeitos causais.
+
+# 6 - Complemento do diagnóstico de influência
+
+## Observações que merecem exame
+
+```{r}
+#| label: mariana-influencia-tabela
+h_final = hatvalues(modelo_final)
+cook_final = cooks.distance(modelo_final)
+p_final = length(coef(modelo_final))
+n_final = nrow(treino)
+
+diagnostico_final = data.frame(
+  id_obs = treino$id_obs, vivo = treino$vivo, classe = treino$classe,
+  idade = treino$idade, sexo = treino$sexo, sozinho = treino$sozinho,
+  alavancagem = h_final, cook = cook_final,
+  destaque_alavancagem = h_final > 3 * p_final / n_final
+)
+principais_influentes = diagnostico_final[order(-diagnostico_final$cook), ]
+kable(head(principais_influentes, 10), digits = 4)
+```
+
+O identificador `id_obs` indica a linha original da base de passageiros, sem
+contar o cabeçalho do CSV. Alavancagem elevada indica um perfil com potencial
+para influenciar o ajuste; a distância de Cook resume a mudança local no ajuste
+associada à observação. As duas medidas não são equivalentes. Os limites dos
+gráficos são referências exploratórias e não regras automáticas de exclusão.
+Nenhuma observação é removida do modelo principal.
+
+## Sensibilidade à observação com maior distância de Cook
+
+```{r}
+#| label: mariana-sensibilidade
+# Reajusta somente no treinamento, mantendo a fórmula já escolhida.
+# A retirada é um cenário de sensibilidade, não uma correção da base.
+j_cook = which.max(cook_final)
+modelo_sensibilidade = update(modelo_final, data = treino[-j_cook, ])
+comparacao_sensibilidade = data.frame(
+  termo = names(coef(modelo_final)),
+  original = coef(modelo_final),
+  sem_maior_cook = coef(modelo_sensibilidade), row.names = NULL
+)
+comparacao_sensibilidade$variacao =
+  comparacao_sensibilidade$sem_maior_cook - comparacao_sensibilidade$original
+kable(comparacao_sensibilidade, digits = 4)
+
+# Compara previsões sobre os mesmos perfis do treinamento.
+p_original = predict(modelo_final, newdata = treino, type = "response")
+p_sensibilidade = predict(modelo_sensibilidade, newdata = treino, type = "response")
+resumo_sensibilidade = data.frame(
+  id_retirado_no_cenario = treino$id_obs[j_cook],
+  media_diferenca_absoluta = mean(abs(p_original - p_sensibilidade)),
+  maior_diferenca_absoluta = max(abs(p_original - p_sensibilidade))
+)
+kable(resumo_sensibilidade, digits = 4)
+```
+
+A comparação das probabilidades ajuda a dimensionar a influência em uma escala
+interpretável. O cenário envolve uma única observação e não esgota a análise de
+robustez. Não comparamos AICs calculados sobre bases diferentes para decidir se
+a observação deve ser excluída. O modelo principal continua sendo o ajustado
+com todas as observações do treinamento.
+
+# 7 - Avaliação no conjunto de teste
+
+A partir desta seção, a fórmula e a ligação do modelo principal estão fixadas.
+Não usamos o teste para retirar termos, escolher a ligação ou ajustar o limiar.
+A avaliação considera os passageiros reservados e um comparador simples que
+atribui a todos a proporção de sobrevivência observada no treinamento.
+
+## Qualidade das probabilidades e discriminação
+
+```{r}
+#| label: mariana-metricas-teste
+auc_binaria = function(y, prob) {
+  n1 = sum(y == 1)
+  n0 = sum(y == 0)
+  if (n1 == 0 || n0 == 0) return(NA_real_)
+  # Postos médios tratam empates como meia concordância.
+  (sum(rank(prob, ties.method = "average")[y == 1]) - n1 * (n1 + 1) / 2) / (n1 * n0)
+}
+metricas_probabilidade = function(y, prob) {
+  pc = pmin(pmax(prob, 1e-15), 1 - 1e-15)
+  c(AUC = auc_binaria(y, prob), Brier = mean((y - prob)^2),
+    Log_loss = -mean(y * log(pc) + (1 - y) * log1p(-pc)))
+}
+
+y_teste = as.integer(teste$vivo == "sim")
+prob_teste = predict(modelo_final, newdata = teste, type = "response")
+prob_referencia = rep(mean(treino$vivo == "sim"), nrow(teste))
+metricas_teste = as.data.frame(rbind(
+  Logito_selecionado = metricas_probabilidade(y_teste, prob_teste),
+  Referencia_prevalencia_treino = metricas_probabilidade(y_teste, prob_referencia)
+))
+kable(metricas_teste, digits = 4)
+```
+
+- **AUC:** mede ordenação/discriminação. É a probabilidade de um sobrevivente
+  receber escore maior que um não sobrevivente, contando empates pela metade.
+  Maior é melhor; 0,5 corresponde à ausência de discriminação pelo escore constante.
+- **Brier:** média do erro quadrático entre probabilidade e resposta 0/1.
+  Menor é melhor; considera tanto calibração quanto discriminação.
+- **Log-loss:** penaliza probabilidades atribuídas ao resultado que efetivamente
+  ocorreu, com penalidade alta para previsões muito confiantes e erradas.
+  Menor é melhor. A proteção numérica no código evita logaritmo de zero.
+
+As medidas são calculadas em uma única divisão de teste. Diferenças pequenas
+não devem ser tratadas como prova de superioridade estável em outras amostras.
+
+## Curva ROC
+
+```{r}
+#| label: mariana-roc
+# Usa todos os limiares distintos; as probabilidades não são reestimadas.
+limiares_roc = c(Inf, sort(unique(prob_teste), decreasing = TRUE), -Inf)
+roc_teste = bind_rows(lapply(limiares_roc, function(t) {
+  pred = prob_teste >= t
+  data.frame(falso_positivo = mean(pred[y_teste == 0]),
+             verdadeiro_positivo = mean(pred[y_teste == 1]))
+}))
+
+ggplot(roc_teste, aes(x = falso_positivo, y = verdadeiro_positivo)) +
+  geom_path(linewidth = .85, color = "#176B87") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "grey50") +
+  coord_equal(xlim = c(0, 1), ylim = c(0, 1)) +
+  labs(x = "1 − especificidade", y = "Sensibilidade",
+       title = "Curva ROC no conjunto de teste",
+       subtitle = paste("AUC =", round(auc_binaria(y_teste, prob_teste), 3))) +
+  theme_minimal()
+```
+
+A curva mostra a troca entre sensibilidade e falsos positivos ao variar o
+limiar. A inspeção dos vários limiares serve para descrever o desempenho;
+não selecionamos um limiar com base neste conjunto de teste.
+
+## Calibração descritiva
+
+```{r}
+#| label: mariana-calibracao
+# Cinco grupos por quantis das previsões, sem usar a resposta na definição.
+# unique() permite lidar com previsões empatadas nos pontos de corte.
+cortes_cal = unique(as.numeric(quantile(prob_teste, seq(0, 1, length.out = 6))))
+if (length(cortes_cal) < 2) {
+  grupos_cal = factor(rep("Todos", length(prob_teste)))
+} else {
+  grupos_cal = cut(prob_teste, breaks = cortes_cal, include.lowest = TRUE,
+                   ordered_result = TRUE)
+}
+calibracao = data.frame(y = y_teste, prob = prob_teste, grupo = grupos_cal) |>
+  group_by(grupo) |>
+  summarise(n = n(), sobreviventes = sum(y),
+            prob_media = mean(prob), proporcao_observada = mean(y),
+            .groups = "drop")
+intervalos_cal = t(vapply(seq_len(nrow(calibracao)), function(i) {
+  binom.test(calibracao$sobreviventes[i], calibracao$n[i])$conf.int
+}, numeric(2)))
+calibracao$IC95_inferior = intervalos_cal[, 1]
+calibracao$IC95_superior = intervalos_cal[, 2]
+kable(calibracao, digits = 3)
+
+ggplot(calibracao, aes(x = prob_media, y = proporcao_observada)) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "grey50") +
+  geom_errorbar(aes(ymin = IC95_inferior, ymax = IC95_superior), width = .025) +
+  geom_point(aes(size = n), color = "#176B87") +
+  coord_equal(xlim = c(0, 1), ylim = c(0, 1)) +
+  labs(x = "Probabilidade média prevista", y = "Proporção observada de sobrevivência",
+       size = "Passageiros", title = "Calibração descritiva no teste",
+       caption = "Barras: intervalos binomiais exatos de 95% para a proporção observada por grupo.") +
+  theme_minimal()
+```
+
+A diagonal representa coincidência entre probabilidade média prevista e
+proporção observada. Pontos acima indicam proporção observada maior que a
+prevista naquele grupo; abaixo, menor. AUC elevada não garante boa calibração.
+Os grupos contêm poucos passageiros e os intervalos são descritivos: não
+incorporam a incerteza do modelo estimado e não constituem um teste formal
+completo de calibração. Não recalibramos o modelo com os dados de teste.
+
+## Classificação com limiar previamente fixado em 0,50
+
+```{r}
+#| label: mariana-confusao
+limiar_classificacao = 0.50
+pred_teste = as.integer(prob_teste >= limiar_classificacao)
+matriz_confusao = table(
+  Observado = factor(y_teste, levels = c(0, 1), labels = c("Não sobreviveu", "Sobreviveu")),
+  Previsto = factor(pred_teste, levels = c(0, 1), labels = c("Não sobreviveu", "Sobreviveu"))
+)
+kable(matriz_confusao)
+
+VP = sum(y_teste == 1 & pred_teste == 1)
+VN = sum(y_teste == 0 & pred_teste == 0)
+FP = sum(y_teste == 0 & pred_teste == 1)
+FN = sum(y_teste == 1 & pred_teste == 0)
+div_segura = function(a, b) if (b == 0) NA_real_ else a / b
+
+metricas_classificacao = data.frame(
+  acuracia = mean(pred_teste == y_teste),
+  sensibilidade = div_segura(VP, VP + FN),
+  especificidade = div_segura(VN, VN + FP),
+  precisao_positiva = div_segura(VP, VP + FP),
+  F1 = div_segura(2 * VP, 2 * VP + FP + FN),
+  acuracia_referencia = mean(as.integer(prob_referencia >= .5) == y_teste)
+)
+kable(metricas_classificacao, digits = 3)
+```
+
+A sensibilidade mede a fração dos sobreviventes identificados; a especificidade,
+a fração dos não sobreviventes identificados. A precisão positiva é a proporção
+de sobreviventes entre os classificados como sobreviventes. O F1 combina
+precisão positiva e sensibilidade. O limiar de 0,50 é uma convenção ilustrativa;
+em uma aplicação de decisão, os custos dos erros deveriam orientar sua escolha
+em dados de treinamento ou validação apropriados, sem reutilizar este teste.
+A classificação 0/1 é uma decisão baseada na probabilidade estimada, e não um
+sorteio Bernoulli.
+
+# 8 - Síntese e limitações
+
+A análise exploratória evidenciou diferenças nas proporções de sobrevivência
+segundo classe, sexo e condição de viajar sozinho. A modelagem ajustada permite
+avaliar essas associações conjuntamente. Entre os candidatos percorridos no
+treinamento, o logito com classe, idade, sexo e suas interações entre pares
+apresentou o menor AIC. A proximidade com o complemento log-log recomenda evitar
+uma afirmação de superioridade expressiva baseada apenas nesse critério.
+
+A presença de interações exige interpretar contrastes e probabilidades para
+perfis definidos. Os coeficientes principais isolados não resumem os efeitos
+para todas as classes, idades e sexos. A análise de sensibilidade explicita
+quanto uma observação influente pode alterar as previsões, sem removê-la do
+modelo principal.
+
+No teste, o logito obteve AUC de **`r round(metricas_teste$AUC[1], 3)`**,
+Brier de **`r round(metricas_teste$Brier[1], 3)`** e log-loss de
+**`r round(metricas_teste$Log_loss[1], 3)`**. O comparador baseado na prevalência
+do treinamento apresentou Brier de **`r round(metricas_teste$Brier[2], 3)`** e
+log-loss de **`r round(metricas_teste$Log_loss[2], 3)`**. Com limiar 0,50, a
+acurácia foi **`r round(100 * metricas_classificacao$acuracia, 1)`%**,
+a sensibilidade **`r round(100 * metricas_classificacao$sensibilidade, 1)`%** e
+a especificidade **`r round(100 * metricas_classificacao$especificidade, 1)`%**.
+As medidas de erro das probabilidades são menores que as do comparador nesta
+amostra de teste. Entretanto, o gráfico de calibração revela desvios entre as
+probabilidades previstas e as proporções observadas em alguns grupos
+intermediários. O número reduzido de observações por grupo limita a precisão.
+Esses valores devem ser lidos em conjunto, sem afirmar calibração perfeita
+ou tomar uma única medida como prova de adequação.
+
+As principais limitações são: uma única divisão de treino e teste; incerteza da
+seleção não incorporada aos intervalos e valores-p; possibilidade de poucos
+passageiros em combinações de características; hipótese de efeito linear da
+idade na escala da ligação dentro de cada combinação de classe e sexo; e
+possíveis variáveis relevantes ausentes. A amostra fornecida não representa
+automaticamente todos os passageiros do Titanic nem outras populações.
+A interpretação é associativa, sem identificação de efeitos causais.
+Uma investigação futura da forma funcional da idade ou de outros candidatos
+deve ocorrer no treinamento, preferencialmente com validação interna, e não
+pela tentativa repetida de melhorar os resultados deste teste.
+
+<!-- FIM CONTRIBUIÇÃO MARIANA -->
